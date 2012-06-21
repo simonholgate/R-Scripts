@@ -1,0 +1,6 @@
+# History files
+.Rhistory
+
+.svn
+.gmt*
+.project

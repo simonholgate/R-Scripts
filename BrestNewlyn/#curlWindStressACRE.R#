@@ -1,0 +1,400 @@
+##*****************************************************************************
+##*****************************************************************************
+## Script to calculate the curl of the wind stress from ACRE
+##*****************************************************************************
+##*****************************************************************************
+curl <- function(X, Y, x, y){
+  ## Calculate the curl of two vector fields
+  ##
+  ## Arguments: two, 2D arrays, X and Y, and two vectors or single values
+  ##            representing the x and y locations of the arrays.
+  ##            if x or y are single values then they are assumed to represent
+  ##            uniform spacing of the array along that axis.
+  ##
+  ## Returns: one 2D array of the curl of the input arrays
+  ##
+  c <- grad(Y, x, 1) - grad(X, y, 2)
+  c
+}
+##*****************************************************************************
+grad <- function(X, x, dir){
+  ## Calculate the gradient of a field d/dx
+  ##
+  ## Arguments: X is an array of real values
+  ##
+  ##            x is an array or a single value. If it is a single value then
+  ##            it is assumed that the spacing is equal between points.
+  ##
+  ##            dir gives the direction in which to operate e.g. whether to return
+  ##            dX/dx or dY/dx. The diff operator works on each column of a multi-
+  ##            dimensional array. The convention adopted is that this is the 'x'
+  ##            direction and has dir=1 (the default). If dir=2 then X is
+  ##            transposed beforehand.
+  ##
+  ## Details: To ensure that the gradients calculated are centred on the same
+  ##          grid as the original data, 3 point differencing is used i.e.
+  ##          dX/dx(i) = X(i+1)-X(i-1)/(2*dx), where i is the ith member of the
+  ##          vector.
+  ##          Due to the requirement of points beyond the bounds of the original grid,
+  ##          the boundaries are wrapped i.e. if there are n members in a vector then
+  ##          component X(n+1) = X(1)
+  ##
+
+  ## Only operate on 2D arrays
+  if (length(dim(X))>2) { stop('Error: grad only supports 2D arrays') }
+
+  ## dir can only have 2 values: 1 or 2
+  if ((dir<1) || (dir>2)) { stop('Error: dir can either be 1 or 2') }
+
+  ## Check dims of array and dir are consistent
+  ## We assume that we _will_ transpose the matrix if dir=1 since the "natural"
+  ## direction of the x-axis is along increasing columns, but diff operates on
+  ## each column of a matrix i.e. along increasing rows
+  ## Remember that the length of x can be 1 if dx is fixed
+  if (length(x)!=1 && (length(x)!=dim(X)[2]) && (dir==1)){
+    stop('Error: length of x must equal number of COLUMNS in X with dir=1')
+  } else {
+    if (length(x)!=1 && (length(x)!=dim(X)[1]) && (dir==2)){
+      stop('Error: length of x must equal number of ROWS in X with dir=2')
+    }
+  }
+  
+  ## Length of x must be equal to 1 or one of the two dimensions of X
+  if (!((length(x==1)) || (length(x)==dim(X)[2]) || (length(x)==dim(X)[1]))){
+    stop('Error: length(x) must be equal to 1 or the length of one of the array dimensions')
+  }
+
+  if ((length(x)==1) && (dir==1)){
+  ## d/dx, x = scalar
+    ## Pad X, wrapping boundaries in x direction
+    X <- pad(X, 1, 1)
+    gr <- diff(t(X), lag=2)/(2*x)
+  } else {
+    ## d/dy, x = scalar
+    if ((length(x)==1) && (dir==2)){
+      ## Pad X, wrapping boundaries in y direction
+      X <- pad(X, 2, 1)
+      gr <- diff(X, lag=2)/(2*x)
+    } else {
+      ## d/dx, x = vector
+      if ((length(x)==dim(X)[2]) && (dir==1)){
+        ## Pad X, wrapping boundaries in x direction
+        X <- pad(X, 1, 1)
+        ## Pad x, wrapping in x direction. For latitude this actually means x(n+1) = x(n)
+        ## For a gradient however, we just want x to be continuous so we'll use wrap=-1
+        x <- pad(x, 1, -1)
+        gr <- diff(t(X), lag=2)/diff(x, lag=2)
+      } else {
+        ## d/dy, x = vector
+        if ((length(x)==dim(X)[1]) && (dir==2)){
+          ## Pad X, wrapping boundaries in y direction
+          X <- pad(X, 2, 1)
+          ## Pad x
+          x <- pad(x, 1, -1)
+          gr <- diff(X, lag=2)/diff(x, lag=2)
+        } else {
+          stop("Error: dimensions not correct")
+        }
+      }
+    }
+  }
+
+  if(dir==1) {
+    t(gr)
+  } else {
+    gr
+  }
+      
+}
+##*****************************************************************************
+pad <- function(X, dir, wrap){
+  ## Pad an array or vector
+  ##
+  ## Arguments: X, an array or vector
+  ##            dir (1|2), direction in which to pad array. Ignored for vectors.
+  ##               For arrays, 1 = pad columns, 2 = pad rows
+  ##            wrap (-1|0|1), whether to wrap (1) or to repeat adjacent value (0)
+  ##               or next to adjacent value (-1)
+  ##
+  ## Returns: a vector or array which has had one dimension increased in length by 2
+  ##
+
+  ## Check if vector or array
+  if(is.null(dim(X))){
+    ## Vector, so create new vector which is 2 longer
+    pa <- vector(length=(length(X)+2), mode=typeof(X))
+    ## Fill with existing values
+    pa[2:(length(X)+1)] <- X
+    ## Wrap?
+    if(wrap==1){
+      pa[1] <- X[length(X)]
+      pa[length(pa)] <- X[1]
+    } else {
+      if(wrap==0){
+        pa[1] <- X[1]
+        pa[length(pa)] <- X[length(X)]
+      } else {
+        if(wrap==-1){
+          pa[1] <- X[1] - (X[2] - X[1])
+          pa[length(pa)] <- X[length(X)] + (X[length(X)] - X[length(X)-1])
+        } else {
+          stop("Error: wrap value must be -1|0|1")
+        }
+      }
+    }
+  } else {
+    ## Array, so check which direction to pad and create new array
+    if(dir==1){
+      ## Pad columns
+      pa <- array(NA, dim=c(nrow(X),(ncol(X)+2)))
+      pa[,2:(ncol(X)+1)] <- X
+      ## Wrap?
+      if(wrap==1){
+        pa[,1] <- X[,ncol(X)]
+        pa[,ncol(pa)] <- X[,1]
+      } else { ## Repeat first/last column
+        if(wrap==0){
+          pa[,1] <- X[,1]
+          pa[,ncol(pa)] <- X[,ncol(X)]
+        } else {
+          if(wrap==-1){
+            pa[,1] <- X[,1] - (X[,2] - X[,1])
+            pa[,ncol(pa)] <- X[,ncol(X)] + (X[,ncol(X)] - X[,(ncol(X)-1)])
+          } else {
+            stop("Error: wrap value must be -1|0|1")
+          }
+        }
+      }
+    } else {
+      if(dir==2){
+        ## Pad rows
+        pa <- array(NA, dim=c((nrow(X)+2),ncol(X)))
+        pa[2:(nrow(X)+1),] <- X
+        ## Wrap?
+        if(wrap==1){
+          pa[1,] <- X[nrow(X),]
+          pa[nrow(pa),] <- X[1,]
+        } else { ## Repeat first/last row
+          if(wrap==0){
+            pa[1,] <- X[1,]
+            pa[nrow(pa),] <- X[nrow(X),]
+            } else {
+              if(wrap==-1){
+                pa[1,] <- X[1,] - (X[2,] - X[1,])
+                pa[nrow(pa),] <- X[nrow(X),] + (X[nrow(X),] - X[(nrow(X)-1),])
+              } else {
+                stop("Error: wrap value must be -1|0|1")
+              }
+           }
+        }
+      }
+    }
+  }
+  pa
+}
+##*****************************************************************************
+ksmooth2 <- function(X, x, y=x, bandwidth){
+  ## Smooth a 2D field
+  ##
+  ## Arguments: X is a 2D array of real values
+  ##
+  ##            x  is a vector of length dim(X)[1] or a scalar value. If it is a scalar value then
+  ##            it is assumed that the data are equally spaced.
+  ##
+  ##            If present, y  is a vector of length dim(X)[2] or a scalar value. If missing
+  ##            y is assumed equal to x. Else if y is a scalar value then it is assumed that the
+  ##            data are equally spaced.
+  ##
+  ##            bandwidth is a vector of 2 values or a scalar value. If it is a scalar value then
+  ##            it is assumed that the smoothing is the same in each direction. Otherwise
+  ##            bandwidth[1] is the number of smoothing points in the x direction and
+  ##            bandwidth[2] is the number of smoothing points in the y direction.
+  ##
+  ## Details: ksmooth2 is a 2D implementation of ksmooth
+  ##
+
+  ## require ksmooth from the stats library
+  library(stats)
+
+  ## number of rows and columns
+  dimr <- dim(X)[1]
+  dimc <- dim(X)[2]
+  
+  ## Only operate on 2D arrays
+  if (length(dim(X))>2) { stop('Error: ksmooth2 only supports 2D arrays') }
+
+  ## x can only be length 1 or dimr
+  if ((length(x)!=1) && (length(x)!=dimr)) { stop('Error: x can only have length 1 or dim(X)[1]') }
+  
+  ## y can only be length 1 or dimc
+  if ((length(y)!=1) && (length(y)!=dimc)) { stop('Error: y can only have length 1 or dim(X)[2]') }
+  
+  ## bandwidth can only be length 1 or 2
+  if ((length(bandwidth)<1) || (length(bandwidth)>2)) {
+    stop('Error:bandwidth can only have length 1 or 2') }
+
+  ## Set the input sequences
+  if (length(x)==1){# x is a scalar
+    inputx <- seq(from=1, by=x, length=dimr)
+  } else {# x is a vector
+    inputx <- x
+  }
+   if (length(y)==1){# y is a scalar
+    inputy <- seq(from=1, by=y, length=dimc)
+  } else {# y is a vector
+    inputy <- y
+  }
+  
+  ## Set the bandwidth
+  if (length(bandwidth)==1){# bandwidth is a scalar
+    bwx <- bandwidth
+    bwy <- bandwidth
+  } else {# bandwidth is a vector
+    bwx <- bandwidth[1]
+    bwy <- bandwidth[2]
+  }
+   
+  tmparr1 <- array(NA, dim=dim(X))
+  
+  ## Smooth first in x direction. Smooth each row in turn
+  for (i in 1:dimr){
+    fins <- which(is.finite(X[i, ]))
+    if(length(fins)>bwy){
+      tmparr1[i,fins] <- ksmooth(inputy[fins],X[i,fins],"normal",bandwidth=bwy, n.points=length(fins), x.points=inputy[fins])$y
+    }
+  }
+  
+  tmparr2 <- array(NA, dim=dim(X))
+  
+  ## Now smooth in y direction. Smooth each column in turn
+  for (j in 1:dimc){
+    fins <- which(is.finite(X[,j]))
+    if(length(fins)>bwx){
+      tmparr2[fins,j] <- ksmooth(inputx[fins],tmparr1[fins,j],"normal",bandwidth=bwx, n.points=length(fins), x.points=inputx[fins])$y
+    }
+  }  
+
+  tmparr2
+}
+
+##*****************************************************************************
+
+load("~/data/ACRE/wsACRE.RData")
+source("~/Dropbox/BrestNewlyn/matrixMethods.R")
+library(fields)
+
+arrayDims <- dim(wsNAnnualMean)
+nlon <- arrayDims[1]
+nlat <- arrayDims[2]
+nyr <- arrayDims[3]
+
+meanAnnualNws <- array(NA, dim=c(nlon, nlat))
+meanAnnualEws <- array(NA, dim=c(nlon, nlat))
+
+for (i in 1:nlon){
+  for (j in 1:nlat){
+    meanAnnualNws[i,j] <- mean(wsNAnnualMean[i,j,], na.rm=T)
+    meanAnnualEws[i,j] <- mean(wsEAnnualMean[i,j,], na.rm=T)
+  }
+}
+
+meanAnnualWSmag <- sqrt(meanAnnualNws^2+meanAnnualEws^2)  
+
+x11()
+filled.contour(wslon,flip.matrix(lat),meanAnnualWSmag, color=tim.colors, nlevels=20, plot.axes = { world(add=T, fill=T, col.water=NA)})
+
+x11()
+lonLat <- expand.grid(wslon[seq(from=2, to=192, by=4)],
+                      (-1*lat[seq(from=2, to=94, by=4)]))
+plot(lonLat[,1], lonLat[,2], type='p', pch=".", xlab="Longitude",
+     ylab="Latitude")
+arrow.plot(lonLat[,1], lonLat[,2],
+           u=as.vector(meanAnnualEws[seq(from=2, to=192, by=4),
+             seq(from=2, to=94, by=4)]),
+           v=as.vector(meanAnnualNws[seq(from=2, to=192, by=4),
+             seq(from=2, to=94, by=4)]),
+           arrow.ex=.2, col='magenta', length=.05,
+           true.angle=T, plot.axes = { world(add=T) })
+arrow.plot(0,100, u=0.1, v=0, arrow.ex=.2, col='magenta',
+           length=.05, true.angle=T)
+text(10, 100, "0.1 m/s", pos=3)
+points(-20,27, pch=19, col="magenta")
+
+## From Marshall and Plumb "Atmosphere, Ocean and Climate Dynamics" Ch 10, Ekman pumping velocity
+## requires the windstress to be divided by f and then the curl taken before dividing by the reference
+## density. f = 2*Omega*sin(theta)
+
+Omega = (2*pi)/(24*60*60) ## rad/s
+f = 2*Omega*sin(lat*pi/180) ## s^-1
+rho = 1025 ## kg/m^3
+
+## Divide each row by f
+meanAnnualNws <- t(meanAnnualNws)
+meanAnnualEws <- t(meanAnnualEws)
+
+nDivF <- array(NA, dim=dim(meanAnnualNws))
+eDivF <- array(NA, dim=dim(meanAnnualEws))
+
+for (i in 1:nlat){
+  nDivF[i,] <- meanAnnualNws[i,]/f[i]
+  eDivF[i,] <- meanAnnualEws[i,]/f[i]
+}
+
+dNdx <- grad(nDivF, lon, 1)
+dEdy <- grad(eDivF, lat, 2)
+
+for (i in 1:nlat){
+  dNdx[i,] <- dNdx[i,]/(111e3*cos(lat[i]*pi/180))
+}
+dEdy <- dEdy/111e3
+
+wek <- (1/rho)* (dNdx - dEdy)
+
+## Remove equatorial region where f->0
+wek[44:51,] <- NA
+
+x11()
+filled.contour(wslon,flip.matrix(lat), rotate90.matrix(wek*86400*365), zlim=c(-200,200), color=tim.colors, nlevels=20, plot.axes = {world(add=T, fill=T, col.water=NA)})
+
+## Repeat for the whole time series of wind stress
+wekAnnual <- array(NA, dim=c(nlat,nlon,nyr))
+for (i in 1:nyr){
+## Divide each row by f
+  tmpNws <- t(wsNAnnualMean[,,i])
+  tmpEws <- t(wsNAnnualMean[,,i])
+
+  tmpnDivF <- array(NA, dim=dim(tmpNws))
+  tmpeDivF <- array(NA, dim=dim(tmpEws))
+
+  for (j in 1:nlat){
+    tmpnDivF[j,] <- tmpNws[j,]/f[j]
+    tmpeDivF[j,] <- tmpEws[j,]/f[j]
+  }
+
+  tmpdNdx <- grad(tmpnDivF, lon, 1)
+  tmpdEdy <- grad(tmpeDivF, lat, 2)
+
+  for (j in 1:nlat){
+    tmpdNdx[j,] <- tmpdNdx[j,]/(111e3*cos(lat[j]*pi/180))
+  }
+  tmpdEdy <- tmpdEdy/111e3
+
+  wekAnnual[,,i] <- (1/rho)* (tmpdNdx - tmpdEdy) *86400*365
+}
+
+## Remove equatorial region where f->0
+wekAnnual[44:51,,] <- NA
+
+x11()
+filled.contour(wslon,flip.matrix(lat),mirror.matrix(rotate270.matrix(wekAnnual[,,nyr])), color=tim.colors, nlevels=20, zlim=c(-150, 150), plot.axes = { world(add=T, fill=T, col.water=NA); grid(col="black") })
+
+## Smoothing to remove ringing. Wavelength is ~10 deg
+## Centred smoothing in x and y +/- 5 points
+wekAnnualSmoothed <- array(NA, dim=dim(wekAnnual))
+for (i in 1:nyr){
+  wekAnnualSmoothed[,,i] <- ksmooth2(wekAnnual[,,i], lat, lon, 7)
+}
+
+x11()
+filled.contour(wslon,flip.matrix(lat),rotate270.matrix(wekAnnualSmoothed[,,nyr]), color=tim.colors, nlevels=20, zlim=c(-150, 150), plot.axes = { world(add=T, fill=T, col.water=NA); grid(col="black") })
+

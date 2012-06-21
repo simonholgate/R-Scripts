@@ -1,0 +1,700 @@
+## Function to minimise the variance between the reconstructed sea level,
+## corrected for pressure, at Brest (total pressure) when an offset is added
+## to account for the jump across the wars
+
+
+#############################
+## Functions for use below ##
+#############################
+
+monthly.slp.ncdf <- function(path, nlon, nlat, nyr){
+  ## Read the sea level data into an array
+  nmon <- 12
+
+  nc <- open.ncdf(path)
+  slp.id <- nc$var[[2]]
+  slpMonthlyArray <- get.var.ncdf(nc, slp.id)
+  close.ncdf(nc)
+
+  dim(slpMonthlyArray) <- c(nlon,nlat,nmon,nyr)
+  slpMonthlyArray
+}
+
+##*****************************************************************************
+
+natl.slp <- function(slpArray, lon, lat){
+  ## Extract the N Atl region from the SLP array
+  
+  nlon <- dim(slpArray)[1]
+  nlat <- dim(slpArray)[2]
+  nyr <- dim(slpArray)[4]
+  nmon <- 12
+  
+
+  nNAtlLon <- length(lon)
+  nNAtlLat <- length(lat)
+  
+  dim(slpArray)<-c(nlon,nlat,nmon*nyr)
+  
+  slpNAtlantic <- slpArray[lon,lat,]
+  dim(slpNAtlantic) <- c(nNAtlLon,nNAtlLat,nmon,nyr)
+  
+  slpNAtlantic
+}
+
+##*****************************************************************************
+
+annual.slp <- function(slpArray){
+  ## Convert a 4D array of monthly data into a 3D annual array
+  
+  nlon <- dim(slpArray)[1]
+  nlat <- dim(slpArray)[2]
+  nyr <- dim(slpArray)[4]
+  
+  slpAnnualArray <- array(NA, dim=c(nlon,nlat,nyr))
+  for(i in 1:nlon){
+    for(j in 1:nlat){
+      slpAnnualArray[i,j,] <- colMeans(slpArray[i,j,,])
+    }
+  }
+  
+  slpAnnualArray
+}
+
+##*****************************************************************************
+
+natl.lon.lat <- function(xlon, ylat){
+#  xlon<-seq(from=-180,by=5,length=nlon)
+#  ylat<-seq(from=90,by=-5,length=nlat)
+  dlon <- xlon[2]-xlon[1]
+  dlat <- ylat[2]-ylat[1]
+
+  # Atlantic covers 100W to 15E and 5S to 80N
+  # We need to see whether we are working in 0 to 360 or -180 to 180
+  # co-ordinate system
+  if(min(xlon)<0){
+    nAtlLon <- match(seq(from=-100,to=15,by=dlon), xlon)
+  } else {
+    nAtlLon <- c(match(seq(from=260,to=359,by=dlon), xlon),
+                 match(seq(from=0,to=15,by=dlon), xlon))
+  }
+  # Do we go from N to S or S to N?
+  if(dlat>0){ # S to N
+    nAtlLat <- match(seq(from=-5,to=80, by=dlat), ylat)
+  } else { # N to S
+    nAtlLat <- match(seq(from=80,to=-5, by=dlat), ylat)
+  }
+  
+  list(lon=nAtlLon,lat=nAtlLat)
+}
+
+##*****************************************************************************
+
+load.tgs <- function(){
+  tg <- new.env()
+  load("../tg/tg.RData", envir=tg)
+  tg
+}
+
+##*****************************************************************************
+
+total.pressure <- function(sea.level, local.pressure){
+  total.p <- 1025*9.8*sea.level/1000 + local.pressure
+
+  total.p
+}
+
+##*****************************************************************************
+
+offset.brest.tg.data <- function(tg.start.year, tg.end.year, offset){
+##  tg <- new.env()
+##  load("../tg/tg.RData", envir=tg)
+
+     brestx <- tg$brest
+      tgs <- which(tg$brest$Year==tg.start.year) # index of start of
+                                                 # Brest TG data
+      tge <- which(tg$brest$Year==tg.end.year) # index of end of Brest TG data
+
+      ## 'Correct' pre-1943 data by 'offset' mm
+      if(tg.start.year<=1943){
+        tgl <- which(brestx$Year==1943)
+        brestx$Height[1:tgl] <- brestx$Height[1:tgl] - offset
+      }
+      
+      sea.level <- brestx[tgs:tge,]
+
+  sea.level
+}
+
+
+##*****************************************************************************
+
+extract.local.pressure <- function(lon,lat, slpArray, lon.range,
+                                   lat.range, start.year, end.year, years){
+  lon.values <- seq(from=lon.range[1], to=lon.range[2], by=5)
+  lat.values <- seq(from=lat.range[1], to=lat.range[2], by=5)
+  
+  start <- which(years==start.year)
+  end <- which(years==end.year)
+  
+  x <- which(lon.values == lon)
+  y <- which(lat.values == lat)
+  local.pressure <- slpArray[x,y,start:end]
+  
+  local.pressure
+
+}
+
+##*****************************************************************************
+
+interp.local.pressure <- function(lon,lat, slpArray, lon.range,
+                                   lat.range, start.year, end.year, years){
+  lon.values <- seq(from=lon.range[1], to=lon.range[2], by=2)
+  lat.values <- seq(from=lat.range[1], to=lat.range[2], by=2)
+  
+  start <- which(years==start.year)
+  end <- which(years==end.year)
+  nyrs <- end - start
+
+  # Check whether lon runs from 0 to 360 or -180 to 180. We want it to be -180
+  # to 180.
+
+  if ((lon >= 180) && (lon.range[1]<0)){
+    lon <- lon - 360
+  } 
+
+  # For each of the nyrs, we need to interpolate the grid to the locations
+  # we've chosen
+  local.pressure <- vector(length=nyrs, mode="numeric")
+  for (i in start:end) {
+    obj <- list(x=lon.values, y=lat.values, z=slpArray[,,i])
+    local.pressure[i-start+1] <- interp.surface(obj,cbind(lon,lat))
+  }
+
+  local.pressure
+
+}
+
+##*****************************************************************************
+## Robustly linearly detrend a vector. Missing values must be included as NA,
+## but are excluded in the resgression.
+detrend <- function(data_vector){
+  df.data_vector <- data.frame(p=data_vector,
+                               t=seq(from=1,to=length(data_vector)))
+  data.lmRob <- lmRob(p ~ t, x=T, y=T, data=df.data_vector,
+                      control=lmRobControl, na.action=na.exclude)
+## We want the returned vector to be the same length as the original vector
+## so use the $x values
+  resid.data_vector <- vector(mode="numeric", length=length(data_vector))
+  resid.data_vector[data.lmRob$x[,2]] <- data.lmRob$residuals 
+
+  resid.data_vector
+}
+
+##*****************************************************************************
+## Correlate detrended pressure
+corr.pressure.dt <- function(tot.p, slpArray, start.year, end.year, years){
+  
+  nlon <- dim(slpArray)[1]
+  nlat <- dim(slpArray)[2]
+  corr.array <- array(NA, dim=c(nlon,nlat,4))
+  
+  start <- which(years==start.year)
+  end <- which(years==end.year)
+  
+  for(i in 1:nlon){
+    for(j in 1:nlat){
+       corr <- cor.test(tot.p, detrend(slpArray[i,j,start:end]),
+                        alternative="two.sided", method="pearson",
+                        na.action=na.exclude)
+       if(corr$p.value<=0.05){ # We're only interested in >= 95% confidence
+         corr.array[i,j,] <-
+          c(corr$estimate,corr$conf.int[1],corr$conf.int[2],corr$p.value)
+       }
+    }
+  }
+
+  corr.array
+}
+
+##*****************************************************************************
+sort.corr.pa <- function(corr.array, slp.array, start.year, end.year, years){
+
+  ps <- which(years==start.year)
+  pe <- which(years==end.year)
+  
+  sorted.corr <- sort(abs(corr.array),decreasing=T, index=T)
+  
+  tmp <- slp.array
+  i <- dim(tmp)[1]
+  j <- dim(tmp)[2]
+  k <- dim(tmp)[3]
+  
+  dim(tmp) <- c((i*j),k)
+  
+  sorted.pa <- tmp[sorted.corr$ix[1:20],ps:pe] # Only return top 20 correlations
+
+  t(sorted.pa)
+}
+
+##*****************************************************************************
+rms <- function(ts){
+  rms <- sqrt(mean(ts^2, na.rm=T))
+  rms
+}
+
+##*****************************************************************************
+most.corr.pa <- function(corr.array, slp.array, start.year, end.year, years){
+  
+  ps <- which(years==start.year)
+  pe <- which(years==end.year)
+  
+  most.correlated.point <- which(abs(corr.array)==max(abs(corr.array),
+                                      na.rm=T), arr.ind=T)
+  
+  most.correlated <- slp.array[most.correlated.point[1],
+                               most.correlated.point[2], ps:pe] 
+
+  most.correlated
+  
+}
+
+##*****************************************************************************
+
+#########################
+## Non-functional part ##
+#########################
+
+library(fields)
+library(maps)
+library(mapdata)
+library(ncdf)
+library(robust)
+source("/home/simonh/workspace/RScripts/matrixMethods.R")
+
+nlon<-180
+nlat<-91
+nyr<-138
+lon<-seq(from=0,by=2,length=nlon)
+lon2 <- c(seq(from=0,by=2,to=180),seq(from=-178,by=2,to=-2))
+lat<-seq(from=90,by=-2,length=nlat)
+slp.yrs <- c(1871:2009)
+
+##*****************************************************************************
+## N Atlantic pressure
+##*****************************************************************************
+
+## Read in monthly sea level pressures
+slpMonthlyArray <- monthly.slp.ncdf("~/data/ACRE/prmsl.mon.mean.nc",
+                                    nlon, nlat, nyr)
+## Leave pressure as Pa
+
+## Extract N Atlantic region from the SLP
+nAtlLonLatIndex <- natl.lon.lat(lon,lat)
+slpNAtlArray <- natl.slp(slpMonthlyArray, nAtlLonLatIndex$lon,
+                         nAtlLonLatIndex$lat)
+
+## Convert monthly SLP to annual SLP
+slpNAtlAnnArray <- annual.slp(slpNAtlArray)
+
+## Set the robust parameters
+lmRobControl <- lmRob.control(mxr=100,mxf=100,trace=F)
+
+##*****************************************************************************
+## Brestx
+##*****************************************************************************
+brestx.pred.start.year <- 1916
+brestx.pred.end.year <- 1943
+brestx.pred71.start.year <- 1871
+brestx.pred71.end.year <- 1943
+brestx.reg.start.year <- 1953
+brestx.reg.end.year <- 2008
+
+offset.low <- -24
+offset.high <- 50
+num.offsets <- length(offset.low:offset.high)
+
+rms.pred.1643 <- vector(mode="numeric", length=num.offsets)
+rms.pred.7143 <- vector(mode="numeric", length=num.offsets)
+
+tg <- load.tgs()
+
+## Get the slp to go with the sl data
+brestx.reg.pa <-
+  interp.local.pressure(-4.5,48.38,slpNAtlAnnArray,
+                        range(lon2[nAtlLonLatIndex$lon]),
+                        range(lat[nAtlLonLatIndex$lat]),
+                        brestx.reg.start.year,
+                        brestx.reg.end.year, slp.yrs)
+
+## Get the 1953-2008 data and build the regression model
+brestx.reg.sl <- offset.brest.tg.data(brestx.reg.start.year,
+                                    brestx.reg.end.year, 0)
+## Convert sl into total pressure
+brestx.reg.tot.p <- total.pressure(brestx.reg.sl$Height, brestx.reg.pa)
+
+## Correlate the detrended total pressure with detrended
+## slp everywhere.
+## Returns a 3D array of dimensions (lon,lat,4) with correlation estimate,
+## conf int [1], conf int [2] and p value. Any estimates with a p value
+## giving less than 95% confidence is returned as NA
+brestx.corr.dt <- corr.pressure.dt(detrend(brestx.reg.tot.p),
+                                            slpNAtlAnnArray,
+                                            brestx.reg.start.year,
+                                            brestx.reg.end.year, slp.yrs)
+## Sort the correlated data
+brestx.reg.most.corr.pa <- most.corr.pa(brestx.corr.dt[,,1],
+                                          slpNAtlAnnArray,
+                                          brestx.reg.start.year,
+                                          brestx.reg.end.year, slp.yrs)
+## Produce a data frame of the most correlated points
+data.brestx <- data.frame(msl=brestx.reg.tot.p,
+                                  t=seq(from=brestx.reg.start.year,
+                                    to=brestx.reg.end.year),
+                                  Pa=brestx.reg.most.corr.pa)
+## Build the model
+tg.lmRob.brestx <- lmRob(msl ~ ., x=T, y=T,
+                                  data=data.brestx,
+                                  control=lmRobControl,
+                                  na.action=na.exclude)
+
+## Now predict the 1916-1943 period
+brestx.pred.most.corr.pa <- most.corr.pa(brestx.corr.dt[,,1],
+                                          slpNAtlAnnArray,
+                                          brestx.pred.start.year,
+                                          brestx.pred.end.year, slp.yrs)
+
+data.brestx.new <- data.frame(t=seq(from=brestx.pred.start.year,
+                                to=brestx.pred.end.year),
+                              Pa=brestx.pred.most.corr.pa)
+
+tg.lmRob.brestx.pred <- predict.lmRob(tg.lmRob.brestx, se.fit=T,
+                                    newdata=data.brestx.new,
+                                      interval='confidence')
+
+
+##*****************************************************************************
+## We're going to look at offsets from -24mm to 50mm and see which reduces the
+## rms most. Douglas took 22mm and we want to see if that fits us best.
+##*****************************************************************************
+
+## Get the slp to go with the sl data
+brestx.pred.pa <-
+  interp.local.pressure(-4.5,48.38,slpNAtlAnnArray,
+                        range(lon2[nAtlLonLatIndex$lon]),
+                        range(lat[nAtlLonLatIndex$lat]),
+                        brestx.pred.start.year,
+                        brestx.pred.end.year, slp.yrs)
+count <- 1
+
+for (offset in offset.low:offset.high) {
+  ## Progress indicator
+  message(offset)
+  ## Get the sl data over the period 1916-1943
+  brestx.pred.sl <- offset.brest.tg.data(brestx.pred.start.year,
+                                    brestx.pred.end.year, offset)
+  ## Convert sl into total pressure
+  brestx.pred.tot.p <- total.pressure(brestx.pred.sl$Height, brestx.pred.pa)
+  if (offset==27) {
+    brestx.pred.tot.p.27 <- brestx.pred.tot.p
+  }
+
+  ## Difference reduction - subtract the prediction from the offset data
+  ## and calculate the rms of the residual
+  brestx.resid.tot.p <- brestx.pred.tot.p - tg.lmRob.brestx.pred$fit
+  
+  rms.pred.1643[count] <- sqrt(mean(brestx.resid.tot.p^2))
+
+  count <- count + 1
+ 
+} ## Loop over offsets
+
+###############################################################################
+## Having found the optimal offset of 27mm for 1916-1943, now carry out
+## regression on the entire, modified time-series
+###############################################################################
+brestx.mod.tot.p.16 <- vector(length=length(1916:2008), mode='numeric')
+## Get the sl data over the period 1916-1943
+brestx.pred16.sl <- offset.brest.tg.data(brestx.pred.start.year,
+                                    brestx.pred71.end.year, 27)
+## Convert sl into total pressure
+brestx.mod.tot.p.16[1:28] <- total.pressure(brestx.pred.sl$Height,
+                                        brestx.pred.pa)
+brestx.mod.tot.p.16[29:37] <- NA
+brestx.mod.tot.p.16[38:93] <- brestx.reg.tot.p
+
+## Correlate the modified, detrended total pressure with detrended
+## slp everywhere.
+## Returns a 3D array of dimensions (lon,lat,4) with correlation estimate,
+## conf int [1], conf int [2] and p value. Any estimates with a p value
+## giving less than 95% confidence is returned as NA
+brestx.mod.corr.dt.16 <- corr.pressure.dt(detrend(brestx.mod.tot.p.16),
+                                            slpNAtlAnnArray,
+                                            brestx.pred.start.year,
+                                            brestx.reg.end.year, slp.yrs)
+## Sort the correlated data
+brestx.mod.most.corr.pa.16 <- most.corr.pa(brestx.mod.corr.dt.16[,,1],
+                                          slpNAtlAnnArray,
+                                          brestx.pred.start.year,
+                                          brestx.reg.end.year, slp.yrs)
+
+## Produce a data frame of the most correlated points
+data.mod.brestx.16 <- data.frame(msl=brestx.mod.tot.p.16,
+                                  t=seq(from=brestx.pred.start.year,
+                                    to=brestx.pred.end.year),
+                                  Pa=brestx.mod.most.corr.pa.16)
+## Build the model
+tg.lmRob.mod.brestx.16 <- lmRob(msl ~ ., x=T, y=T,
+                                  data=data.mod.brestx.16,
+                                  control=lmRobControl,
+                                  na.action=na.exclude)
+
+##*****************************************************************************
+## Repeat for 1871-1943
+##*****************************************************************************
+## Now predict the 1916-1953 period
+
+## While correct, the below doesn't return the same point as is most correlated
+## over the full 1871-2008 period
+brestx.pred71.most.corr.pa <- most.corr.pa(brestx.corr.dt[,,1],
+                                          slpNAtlAnnArray,
+                                          brestx.pred71.start.year,
+                                          brestx.pred71.end.year, slp.yrs)
+
+## Use the below to test how well this works with the most correlated point
+## over the whole period which is at 41,17
+#brestx.pred71.most.corr.pa <- slpNAtlAnnArray[39,17,1:73]
+
+data.brestx.new71 <- data.frame(t=seq(from=brestx.pred71.start.year,
+                                to=brestx.pred71.end.year),
+                              Pa=brestx.pred71.most.corr.pa)
+
+tg.lmRob.brestx.pred71 <- predict.lmRob(tg.lmRob.brestx, se.fit=T,
+                                    newdata=data.brestx.new71,
+                                      interval='confidence')
+
+## Get the slp to go with the sl data
+brestx.pred71.pa <-
+  interp.local.pressure(-4.5,48.38,slpNAtlAnnArray,
+                        range(lon2[nAtlLonLatIndex$lon]),
+                        range(lat[nAtlLonLatIndex$lat]),
+                        brestx.pred71.start.year,
+                        brestx.pred71.end.year, slp.yrs)
+count <- 1
+
+for (offset in offset.low:offset.high) {
+  ## Progress indicator
+  message(offset)
+  ## Get the sl data over the period 1871-1943
+  brestx.pred71.sl <- offset.brest.tg.data(brestx.pred71.start.year,
+                                    brestx.pred71.end.year, offset)
+  ## Convert sl into total pressure
+  brestx.pred71.tot.p <- total.pressure(brestx.pred71.sl$Height,
+                                        brestx.pred71.pa)
+  if (offset==31) {
+    brestx.pred71.tot.p.31 <- brestx.pred71.tot.p
+  }
+  if (offset==27) {
+    brestx.pred71.tot.p.27 <- brestx.pred71.tot.p
+  }
+  ## Difference reduction - subtract the prediction from the offset data
+  ## and calculate the rms of the residual
+  brestx.resid71.tot.p <- brestx.pred71.tot.p - tg.lmRob.brestx.pred71$fit
+  
+  rms.pred.7143[count] <- sqrt(mean(brestx.resid71.tot.p^2))
+
+  count <- count + 1
+ 
+} ## Loop over offsets
+
+###############################################################################
+## Having found the optimal offset of 31mm for 1871-1943, now carry out
+## regression on the entire, modified time-series
+###############################################################################
+
+brestx.mod.tot.p <- vector(length=length(1871:2008), mode='numeric')
+## Get the sl data over the period 1871-1943
+brestx.pred71.sl <- offset.brest.tg.data(brestx.pred71.start.year,
+                                    brestx.pred71.end.year, 31)
+## Convert sl into total pressure
+brestx.mod.tot.p[1:73] <- total.pressure(brestx.pred71.sl$Height,
+                                        brestx.pred71.pa)
+brestx.mod.tot.p[83:138] <- brestx.reg.tot.p
+
+# Set zeros to NA
+brestx.mod.na.tot.p <- brestx.mod.tot.p
+brestx.mod.na.tot.p[74:82] <- NA
+
+## Correlate the modified, detrended total pressure with detrended
+## slp everywhere.
+## Returns a 3D array of dimensions (lon,lat,4) with correlation estimate,
+## conf int [1], conf int [2] and p value. Any estimates with a p value
+## giving less than 95% confidence is returned as NA
+brestx.mod.corr.dt <- corr.pressure.dt(detrend(brestx.mod.na.tot.p),
+                                            slpNAtlAnnArray,
+                                            brestx.pred71.start.year,
+                                            brestx.reg.end.year, slp.yrs)
+## Sort the correlated data
+brestx.mod.most.corr.pa <- most.corr.pa(brestx.mod.corr.dt[,,1],
+                                          slpNAtlAnnArray,
+                                          brestx.pred71.start.year,
+                                          brestx.reg.end.year, slp.yrs)
+
+## Produce a data frame of the most correlated points
+data.mod.brestx <- data.frame(msl=brestx.mod.na.tot.p,
+                                  t=seq(from=brestx.pred71.start.year,
+                                    to=brestx.reg.end.year),
+                                  Pa=brestx.mod.most.corr.pa)
+## Build the model
+tg.lmRob.mod.brestx <- lmRob(msl ~ ., x=T, y=T,
+                                  data=data.mod.brestx,
+                                  control=lmRobControl,
+                                  na.action=na.exclude)
+
+###############################################################################
+## Cleaned up timeseries. Linear trend + residual
+###############################################################################
+brestx.trend <- lmRob(msl ~ t, x=T, y=T,
+                                  data=data.brestx,
+                                  control=lmRobControl,
+                                  na.action=na.exclude)
+brestx.clean.trend <- brestx.trend$coef[2]*c(1871:2008) + brestx.trend$coef[1]
+brestx.clean <- brestx.clean.trend
+brestx.clean[1:73] <- brestx.clean[1:73] +
+  (brestx.pred71.tot.p.31 - tg.lmRob.brestx.pred71$fit)
+brestx.clean[74:82] <- NA
+brestx.clean[83:138] <- brestx.clean[83:138] + tg.lmRob.brestx$resid
+
+#brestx.clean2 <- brestx.clean.trend
+#brestx.clean2 <- brestx.clean2 + tg.lmRob.mod.brestx$resid
+
+#brestx.most.corr.pa <- slpNAtlAnnArray[43,17,]
+save(file="Sam_data_1871.RData", brestx.mod.na.tot.p, brestx.mod.most.corr.pa)
+
+##*********************##
+##* Variance reduction *#
+##*********************##
+
+## Variance reduction post-war
+(var(detrend(brestx.reg.tot.p)) -
+ var(brestx.reg.tot.p - tg.lmRob.brestx$fitted))/
+  var(detrend(brestx.reg.tot.p)) * 100
+##[1] 55.53066
+
+(rms(detrend(brestx.reg.tot.p)) -
+ rms(brestx.reg.tot.p - tg.lmRob.brestx$fitted))/
+  rms(detrend(brestx.reg.tot.p)) * 100
+##[1] 33.65586
+
+## Variance reduction pre-war
+(var(detrend(brestx.pred.tot.p.27)) -
+ var(brestx.pred.tot.p.27 - tg.lmRob.brestx.pred$fit))/
+  var(detrend(brestx.pred.tot.p.27)) * 100
+##[1] 16.36973
+
+(rms(detrend(brestx.pred.tot.p.27)) -
+ rms(brestx.pred.tot.p.27 - tg.lmRob.brestx.pred$fit))/
+  rms(detrend(brestx.pred.tot.p.27)) * 100
+##[1] 8.55391
+
+junk <- vector(length=138, mode="numeric")
+junk[1:73] <- tg.lmRob.mod.brestx$fitted[1:73]
+junk[83:138] <- tg.lmRob.mod.brestx$fitted[74:129]
+junk[74:82] <- NA
+
+(var(detrend(brestx.mod.na.tot.p), na.rm=T) -
+ var((brestx.mod.na.tot.p - junk), na.rm=T))/
+  var(detrend(brestx.mod.na.tot.p), na.rm=T) * 100
+##[1] 34.83666
+
+junk <- vector(length=93, mode="numeric")
+junk[1:28] <- tg.lmRob.mod.brestx.16$fitted[1:28]
+junk[38:93] <- tg.lmRob.mod.brestx.16$fitted[74:129]
+junk[29:37] <- NA
+
+(var(detrend(brestx.mod.na.tot.p[46:138]), na.rm=T) -
+ var((brestx.mod.na.tot.p[46:138] - junk), na.rm=T))/
+  var(detrend(brestx.mod.na.tot.p[46:138]), na.rm=T) * 100
+##[1] 33.22338
+
+##*********##
+##* Plots *##
+##*********##
+
+# Conversion factor Pa -> sea level equivalent (mm)
+cf <- 1025*9.81/1000
+#png(file="originalDataRegression1608.png")
+plot(brestx.reg.start.year:brestx.reg.end.year, brestx.reg.tot.p/cf - 9900,
+     type='l', col='blue',
+     xlim=c(brestx.pred.start.year,brestx.reg.end.year),
+     ylim=c(9.940e4/cf - 9900, 1.025e5/cf - 9900),
+     xlab='Year', ylab='Sea-Level Equivalent [mm]', lwd=2)
+lines(tg.lmRob.brestx$x[,2],tg.lmRob.brestx$fitted/cf  - 9900, col='red', lwd=2)
+lines(brestx.pred.start.year:brestx.pred.end.year,
+      brestx.pred.tot.p/cf - 9900, col='blue', lwd=2)
+lines(brestx.pred.start.year:brestx.pred.end.year,
+      tg.lmRob.brestx.pred$fit/cf - 9900, col='orange', lwd=2)
+grid(lwd=2)
+#dev.off()
+
+x11()
+#png(file="optimalOffset1608.png")
+plot(brestx.reg.start.year:brestx.reg.end.year, brestx.reg.tot.p/cf - 9900,
+     type='l', col='blue',
+     xlim=c(brestx.pred.start.year,brestx.reg.end.year),
+     ylim=c(9.985e4/cf - 9900, 1.025e5/cf - 9900),
+     xlab='Year', ylab='Sea-Level Equivalent [mm]', lwd=2)
+lines(tg.lmRob.brestx$x[,2],tg.lmRob.brestx$fitted/cf  - 9900, col='red', lwd=2)
+lines(brestx.pred.start.year:brestx.pred.end.year,
+      brestx.pred.tot.p.27/cf - 9900, col='magenta', lwd=2)
+lines(brestx.pred.start.year:brestx.pred.end.year,
+      tg.lmRob.brestx.pred$fit/cf - 9900, col='orange', lwd=2)
+grid(lwd=2)
+#dev.off()
+
+x11()
+#png(file="predictedDataOptimalOffset.png")
+plot(brestx.reg.start.year:brestx.reg.end.year, brestx.reg.tot.p/cf  - 9900,
+     type='l', col='blue', lwd=2,
+     xlim=c(brestx.pred71.start.year,brestx.reg.end.year),
+     ylim=c(9.945e4/cf  - 9900, 1.025e5/cf  - 9900), 
+     xlab='Year', ylab='Sea-Level Equivalent [mm]')
+lines(tg.lmRob.brestx$x[,2],tg.lmRob.brestx$fitted /cf  - 9900,
+      col='red', lwd=2)
+lines(brestx.pred71.start.year:brestx.pred71.end.year,
+      brestx.pred71.tot.p.31/cf  - 9900, col='magenta', lwd=2)
+#lines(brestx.pred71.start.year:brestx.pred71.end.year,
+#      brestx.pred71.tot.p.27, col='green')
+lines(brestx.pred71.start.year:brestx.pred71.end.year,
+      tg.lmRob.brestx.pred71$fit/cf  - 9900, col='orange', lwd=2)
+grid(lwd=2)
+#dev.off()
+
+x11()
+#png(file="offsetPlot.png")
+plot(c(offset.low:offset.high), rms.pred.1643, type='l', xlab='Offset [mm]',
+     ylab='RMS of Offset Data minus Prediction', lwd=2, ylim=c(250,500))
+grid(lwd=2)
+#lines(c(offset.low:offset.high), rms.pred.7143, xlab='Offset',
+#     ylab='RMS of Offset Data minus Prediction', lwd=2, lty='dotdash')
+#dev.off()
+
+x11()
+#png(file="residualPlot.png")
+plot(brestx.reg.start.year:brestx.reg.end.year, brestx.reg.tot.p/cf  - 9900,
+     type='l', col='blue', lwd=2,
+     xlim=c(brestx.pred71.start.year,brestx.reg.end.year),
+     ylim=c(9.905e4/cf  - 9900, 1.025e5/cf  - 9900), 
+     xlab='Year', ylab='Sea-Level Equivalent [mm]')
+lines(brestx.pred71.start.year:brestx.reg.end.year, brestx.clean/cf  - 9900,
+      col='red', lwd=2)
+lines(brestx.pred71.start.year:brestx.pred71.end.year,
+      brestx.pred71.tot.p.31/cf  - 9900, col='blue', lwd=2)
+lines(brestx.pred71.start.year:brestx.reg.end.year,
+      brestx.clean.trend/cf  - 9900, col='black', lwd=2, lty='dotdash')
+grid(lwd=2)
+##lines(brestx.pred71.start.year:brestx.reg.end.year,
+##      tg.lmRob.mod.brestx$fitted, col='cyan')
+##lines(brestx.pred71.start.year:brestx.reg.end.year,
+##      brestx.clean2, col='orange')
+#dev.off()

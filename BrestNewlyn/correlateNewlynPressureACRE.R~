@@ -1,0 +1,925 @@
+## Function to correlate sea level corrected for pressure at Newlyn (total pressure) with sea level
+## pressure everywhere
+
+
+#############################
+## Functions for use below ##
+#############################
+
+monthly.slp.ncdf <- function(path, nlon, nlat, nyr){
+  ## Read the sea level data into an array
+  nmon <- 12
+
+#  slpMonthlyArray<-array(NA,dim=c(nlon,nlat,nmon,nyr))
+
+#  con<-file(path,"rb")
+
+#  for (i in 1:nlat){
+#    for (j in 1:nlon){
+#      for (k in 1:nyr){
+#        slp<-readBin(con,what="numeric", size=4, n=nmon, endian='little')
+#        slpMonthlyArray[j,i,,k]<-slp
+#      }
+#    }
+#  }
+#  close(con)
+  
+  nc <- open.ncdf(path)
+  slp.id <- nc$var[[2]]
+  slpMonthlyArray <- get.var.ncdf(nc, slp.id)
+  close.ncdf(nc)
+
+  dim(slpMonthlyArray) <- c(nlon,nlat,nmon,nyr)
+  slpMonthlyArray
+}
+
+##*******************************************************************************************************
+
+natl.slp <- function(slpArray, lon, lat){
+  ## Extract the N Atl region from the SLP array
+  
+  nlon <- dim(slpArray)[1]
+  nlat <- dim(slpArray)[2]
+  nyr <- dim(slpArray)[4]
+  nmon <- 12
+  
+
+  nNAtlLon <- length(lon)
+  nNAtlLat <- length(lat)
+  
+  dim(slpArray)<-c(nlon,nlat,nmon*nyr)
+  
+  slpNAtlantic <- slpArray[lon,lat,]
+  dim(slpNAtlantic) <- c(nNAtlLon,nNAtlLat,nmon,nyr)
+  
+  slpNAtlantic
+}
+
+##*******************************************************************************************************
+
+annual.slp <- function(slpArray){
+  ## Convert a 4D array of monthly data into a 3D annual array
+  
+  nlon <- dim(slpArray)[1]
+  nlat <- dim(slpArray)[2]
+  nyr <- dim(slpArray)[4]
+  
+  slpAnnualArray <- array(NA, dim=c(nlon,nlat,nyr))
+  for(i in 1:nlon){
+    for(j in 1:nlat){
+      slpAnnualArray[i,j,] <- colMeans(slpArray[i,j,,])
+    }
+  }
+  
+  slpAnnualArray
+}
+
+##*******************************************************************************************************
+
+natl.lon.lat <- function(xlon, ylat){
+#  xlon<-seq(from=-180,by=5,length=nlon)
+#  ylat<-seq(from=90,by=-5,length=nlat)
+  dlon <- xlon[2]-xlon[1]
+  dlat <- ylat[2]-ylat[1]
+
+  # Atlantic covers 100W to 15E and 5S to 80N
+  # We need to see whether we are working in 0 to 360 or -180 to 180 co-ordinate system
+  if(min(xlon)<0){
+    nAtlLon <- match(seq(from=-100,to=15,by=dlon), xlon)
+  } else {
+    nAtlLon <- c(match(seq(from=260,to=359,by=dlon), xlon), match(seq(from=0,to=15,by=dlon), xlon))
+  }
+  # Do we go from N to S or S to N?
+  if(dlat>0){ # S to N
+    nAtlLat <- match(seq(from=-5,to=80, by=dlat), ylat)
+  } else { # N to S
+    nAtlLat <- match(seq(from=80,to=-5, by=dlat), ylat)
+  }
+  
+  list(lon=nAtlLon,lat=nAtlLat)
+}
+
+##*******************************************************************************************************
+
+load.tg.data <- function(tg.start.year, tg.end.year, station){
+  tg <- new.env()
+  load("../tg/tg.RData", envir=tg)
+
+  if(station=='brest'){
+    tgs <- which(tg$brest$Year==tg.start.year) # index of start of Brest TG data
+    tge <- which(tg$brest$Year==tg.end.year) # index of end of Brest TG data
+    sea.level <- tg$brest[tgs:tge,]
+  } else {
+    if(station=='brest22'){
+      brest22 <- tg$brest
+      tgs <- which(tg$brest$Year==tg.start.year) # index of start of Brest TG data
+      tge <- which(tg$brest$Year==tg.end.year) # index of end of Brest TG data
+
+      ## 'Correct' pre-1943 data by 22mm
+      if(tg.start.year<=1943){
+        tgl <- which(brest22$Year==1943)
+        brest22$Height[1:tgl] <- brest22$Height[1:tgl]-22
+      }
+      
+      sea.level <- brest22[tgs:tge,]
+      
+    } else {
+      if(station=='newlyn'){
+        tgs <- which(tg$newlyn$Year==tg.start.year) # index of start of Newlyn TG data
+        tge <- which(tg$newlyn$Year==tg.end.year) # index of end of Newlyn TG data
+        sea.level <- tg$newlyn[tgs:tge,]
+      } else {
+        error(paste("station not known:", station))
+      }
+    }
+  }
+
+  sea.level
+}
+
+##*******************************************************************************************************
+
+total.pressure <- function(sea.level, local.pressure){
+  total.p <- 1025*9.8*sea.level/1000 + local.pressure
+
+  total.p
+}
+
+##*******************************************************************************************************
+
+extract.local.pressure <- function(lon,lat, slpArray, lon.range,
+                                   lat.range, start.year, end.year, years){
+  lon.values <- seq(from=lon.range[1], to=lon.range[2], by=5)
+  lat.values <- seq(from=lat.range[1], to=lat.range[2], by=5)
+  
+  start <- which(years==start.year)
+  end <- which(years==end.year)
+  
+  x <- which(lon.values == lon)
+  y <- which(lat.values == lat)
+  local.pressure <- slpArray[x,y,start:end]
+  
+  local.pressure
+
+}
+
+##*******************************************************************************************************
+
+interp.local.pressure <- function(lon,lat, slpArray, lon.range,
+                                   lat.range, start.year, end.year, years){
+  lon.values <- seq(from=lon.range[1], to=lon.range[2], by=2)
+  lat.values <- seq(from=lat.range[1], to=lat.range[2], by=2)
+  
+  start <- which(years==start.year)
+  end <- which(years==end.year)
+  nyrs <- end - start
+
+  # Check whether lon runs from 0 to 360 or -180 to 180. We want it to be -180 to 180.
+
+  if ((lon >= 180) && (lon.range[1]<0)){
+    lon <- lon - 360
+  } 
+
+  # For each of the nyrs, we need to interpolate the grid to the locations we've chosen
+  local.pressure <- vector(length=nyrs, mode="numeric")
+  for (i in start:end) {
+    obj <- list(x=lon.values, y=lat.values, z=slpArray[,,i])
+    local.pressure[i-start+1] <- interp.surface(obj,cbind(lon,lat))
+  }
+
+  local.pressure
+
+}
+
+##*******************************************************************************************************
+
+corr.pressure <- function(tot.p, slpArray, start.year, end.year, years){
+  
+  nlon <- dim(slpArray)[1]
+  nlat <- dim(slpArray)[2]
+  corr.array <- array(NA, dim=c(nlon,nlat,4))
+  
+  start <- which(years==start.year)
+  end <- which(years==end.year)
+  
+  for(i in 1:nlon){
+    for(j in 1:nlat){
+       corr <- cor.test(tot.p, slpArray[i,j,start:end], alternative="two.sided",
+        method="pearson", na.action=na.exclude)
+       if(corr$p.value<=0.05){ # We're only interested in >= 95% confidence
+         corr.array[i,j,] <-
+          c(corr$estimate,corr$conf.int[1],corr$conf.int[2],corr$p.value)
+       }
+    }
+  }
+
+  corr.array
+}
+
+##*******************************************************************************************************
+## Robustly linearly detrend a vector. Missing values must be included as NA, but are excluded
+## in the resgression.
+detrend <- function(data_vector){
+  df.data_vector <- data.frame(p=data_vector,t=seq(from=1,to=length(data_vector)))
+  data.lmRob <- lmRob(p ~ t, x=T, y=T, data=df.data_vector, control=lmRobControl,
+                              na.action=na.exclude)
+## We want the returned vector to be the same length as the original vector so use the $x values
+  resid.data_vector <- vector(mode="numeric", length=length(data_vector))
+  resid.data_vector[data.lmRob$x[,2]] <- data.lmRob$residuals 
+
+  resid.data_vector
+}
+
+##*******************************************************************************************************
+## Correlate detrended pressure
+corr.pressure.dt <- function(tot.p, slpArray, start.year, end.year, years){
+  
+  nlon <- dim(slpArray)[1]
+  nlat <- dim(slpArray)[2]
+  corr.array <- array(NA, dim=c(nlon,nlat,4))
+  
+  start <- which(years==start.year)
+  end <- which(years==end.year)
+  
+  for(i in 1:nlon){
+    for(j in 1:nlat){
+       corr <- cor.test(tot.p, detrend(slpArray[i,j,start:end]), alternative="two.sided",
+        method="pearson", na.action=na.exclude)
+       if(corr$p.value<=0.05){ # We're only interested in >= 95% confidence
+         corr.array[i,j,] <-
+          c(corr$estimate,corr$conf.int[1],corr$conf.int[2],corr$p.value)
+       }
+    }
+  }
+
+  corr.array
+}
+
+##*******************************************************************************************************
+
+make.image <- function(lon,lat,data.array){
+  image.plot(lon,lat,data.array, zlim=c(-0.6,0.6))
+  map("worldHires", xlim=c(-100,15), ylim=c(-5,80), interior=F, fill=F, col="grey50", resolution=0, add=T)
+  map.axes()
+  points(expand.grid(c(-20, -15,-10, -5, 0 , 5, 10), c(40,45,50,55,60)), pch=19, col="grey20")
+  points( y=50.1, x=-5.55, pch='*', col="grey20", cex=3)
+  points( y=48.38, x=-4.5, pch='*', col="grey20", cex=3)
+  points(y=c(45, 45, 45, 45, 40, 40, 40, 50, 50), x=c(-10, -15, -20,
+  -5, -15, -10, -20, -20, -15), pch=19, col="yellow")
+}
+
+##*******************************************************************************************************
+
+make.image2 <- function(lon,lat,data.array){
+  image(lon,lat,data.array, zlim=c(-0.6,0.6), col=tim.colors())
+  map("worldHires", xlim=c(-100,15), ylim=c(-5,80), interior=F, fill=F, col="grey50", resolution=0, add=T)
+  map.axes()
+  points(expand.grid(c(-20, -15,-10, -5, 0 , 5, 10), c(40,45,50,55,60)), pch=19, col="grey20")
+  points( y=50.1, x=-5.55, pch='*', col="grey20", cex=3)
+  points( y=48.38, x=-4.5, pch='*', col="grey20", cex=3)
+  points(y=c(45, 45, 45, 45, 40, 40, 40, 50, 50), x=c(-10, -15, -20,
+  -5, -15, -10, -20, -20, -15), pch=19, col="yellow")
+}
+
+
+
+##*******************************************************************************************************
+
+make.image3 <- function(lon,lat,data.array){
+  image.plot(lon,lat,data.array, zlim=c(-0.6,0.6))
+  world(add=T)
+  points(expand.grid(c(-20, -15,-10, -5, 0 , 5, 10), c(40,45,50,55,60)), pch=19, col="grey20")
+  points( y=50.1, x=-5.55, pch='*', col="grey20", cex=3)
+  points( y=48.38, x=-4.5, pch='*', col="grey20", cex=3)
+#  points(y=c(45, 45, 45, 45, 40, 40, 40, 50, 50), x=c(-10, -15, -20,
+#  -5, -15, -10, -20, -20, -15), pch=19, col="yellow")
+  points(-25.7,35.75, pch=19, col="magenta", cex=2)
+}
+
+##*******************************************************************************************************
+# As make.image3 but without a fixed zlim
+make.image4 <- function(lon,lat,data.array){
+  image.plot(lon,lat,data.array)
+  world(add=T, shift=T)
+  points(expand.grid(c(-20, -15,-10, -5, 0 , 5, 10), c(40,45,50,55,60)), pch=19, col="grey20")
+  points( y=50.1, x=-5.55, pch='*', col="grey20", cex=3)
+  points( y=48.38, x=-4.5, pch='*', col="grey20", cex=3)
+  points( y=37.8, x=-122.467, pch='*', col="grey20", cex=3)
+  points(y=c(45, 45, 45, 45, 40, 40, 40, 50, 50), x=c(-10, -15, -20,
+  -5, -15, -10, -20, -20, -15), pch=19, col="yellow")
+}
+
+##*******************************************************************************************************
+make.image5 <- function(lon,lat,data.array){
+   image.plot(lon,lat,data.array, zlim=c(-0.6,0.6))
+   world(add=T)
+   points( y=50.1, x=-5.55, pch='*', col="grey20", cex=3)
+   points( y=48.38, x=-4.5, pch='*', col="grey20", cex=3)
+   points( y=50.1, x=-5.55, pch='*', col="grey20", cex=3)
+   points( y=48.38, x=-4.5, pch='*', col="grey20", cex=3)
+   points(-25.7,37.75, pch='*', col="grey80", cex=3)
+   points(-16,30, pch=21, cex=6, col='orange', lwd=2)
+ }
+##*****************************************************************************
+# Using filled contours
+make.image5 <- function(lon,lat,data.array){
+  lenLon <- length(lon)
+  lenLat <- length(lat)
+  lonLat <- expand.grid(lon[seq(from=2, to=lenLon, by=4)],
+                      lat[seq(from=2, to=lenLon, by=4)])
+  filled.contour(lon, lat, data.array, color=tim.colors, nlevels=20,
+               plot.axes = { world(add=T);
+                             ##points(-7.5, 40.9517, pch=19, col="grey60", cex=1);
+                             ##points(-25.7,35.75, pch=19, col="magenta", cex=1);
+                             grid(col="black")},
+               zlim=c(-0.7,0.7))
+}
+
+##*******************************************************************************************************
+
+multi.plot.4 <- function(lon,lat, array1, array2, array3, array4, title.str){
+##
+## Multi-plot of lagged correlations
+##
+
+set.panel()
+     
+## Here is quick but quirky way to add a common legend to several plots. 
+## The idea is leave some room in the margin and then over plot in this margin
+     
+par(oma=c( 0,0,0,4)) # margin of 4 spaces width at right hand side
+set.panel( 2,2) # 2X2 matrix of plots
+     
+## now draw all your plots using usual image command
+make.image2(lon,lat,array1)
+title(main=title.str[1])
+make.image2(lon,lat,array2)
+title(main=title.str[2])
+make.image2(lon,lat,array3)
+title(main=title.str[3])
+make.image2(lon,lat,array4)
+title(main=title.str[4])
+
+par(oma=c( 0,0,0,1))# reset margin to be much smaller.
+image.plot( legend.only=TRUE, zlim=c(-0.6,0.6)) 
+     
+## image.plot tricked into  plotting in margin of old setting 
+     
+set.panel() # reset plotting device
+
+}
+
+##*******************************************************************************************************
+sort.corr.pa <- function(corr.array, slp.array, start.year, end.year, years){
+
+  ps <- which(years==start.year)
+  pe <- which(years==end.year)
+  
+  sorted.corr <- sort(abs(corr.array),decreasing=T, index=T)
+  
+  tmp <- slp.array
+  i <- dim(tmp)[1]
+  j <- dim(tmp)[2]
+  k <- dim(tmp)[3]
+  
+  dim(tmp) <- c((i*j),k)
+  
+  sorted.pa <- tmp[sorted.corr$ix[1:20],ps:pe] # Only return top 20 correlations
+
+  t(sorted.pa)
+}
+
+##*******************************************************************************************************
+
+#########################
+## Non-functional part ##
+#########################
+
+library(fields)
+library(maps)
+library(mapdata)
+library(ncdf)
+library(robust)
+source("/home/simonh/workspace/RScripts/matrixMethods.R")
+
+nlon<-180
+nlat<-91
+nyr<-138
+lon<-seq(from=0,by=2,length=nlon)
+lon2 <- c(seq(from=0,by=2,to=180),seq(from=-178,by=2,to=-2))
+lat<-seq(from=90,by=-2,length=nlat)
+#lat2<-seq(from=-90,by=2,length=nlat)
+slp.yrs <- c(1871:2009)
+
+newlyn.start.year.partial <- 1953
+newlyn.end.year.partial <- 2008
+newlyn.start.year.pred <- 1916
+newlyn.end.year.pred <- 1943
+newlyn.start.year.full <- 1916
+newlyn.end.year.full <- 2008
+
+##*******************************************************************************************************
+## N Atlantic pressure
+
+slpMonthlyArray <- monthly.slp.ncdf("~/data/ACRE/prmsl.mon.mean.nc", nlon, nlat, nyr)
+# Leave pressure as Pa
+#slpMonthlyArray <- slpMonthlyArray/100
+
+nAtlLonLatIndex <- natl.lon.lat(lon,lat)
+slpNAtlArray <- natl.slp(slpMonthlyArray, nAtlLonLatIndex$lon, nAtlLonLatIndex$lat)
+slpNAtlAnnArray <- annual.slp(slpNAtlArray)
+
+##*******************************************************************************************************
+## Newlyn
+
+## Partial
+newlyn.sl.partial <- load.tg.data(newlyn.start.year.partial,newlyn.end.year.partial,"newlyn")
+newlyn.pa.partial <-
+  interp.local.pressure(-5.55,50.1,slpNAtlAnnArray,
+                        range(lon2[nAtlLonLatIndex$lon]),range(lat[nAtlLonLatIndex$lat]),
+                         newlyn.start.year.partial, newlyn.end.year.partial, slp.yrs)
+
+newlyn.tot.p.partial <- total.pressure(newlyn.sl.partial$Height,newlyn.pa.partial)
+
+newlyn.corr.partial <- corr.pressure(newlyn.tot.p.partial, slpNAtlAnnArray,
+                             newlyn.start.year.partial, newlyn.end.year.partial, slp.yrs)
+
+newlyn.lag1.corr.partial <- corr.pressure(newlyn.tot.p.partial, slpNAtlAnnArray,
+                             (newlyn.start.year.partial-1), (newlyn.end.year.partial-1), slp.yrs)
+
+newlyn.lag2.corr.partial <- corr.pressure(newlyn.tot.p.partial, slpNAtlAnnArray,
+                             (newlyn.start.year.partial-2), (newlyn.end.year.partial-2), slp.yrs)
+
+newlyn.lag10.corr.partial <- corr.pressure(newlyn.tot.p.partial, slpNAtlAnnArray,
+                             (newlyn.start.year.partial-10),
+                             (newlyn.end.year.partial-10), slp.yrs)
+
+## Prediction
+newlyn.sl.pred <- load.tg.data(newlyn.start.year.pred,newlyn.end.year.pred,"newlyn")
+newlyn.pa.pred <-
+  interp.local.pressure(-5.55,50.1,slpNAtlAnnArray,range(lon2[nAtlLonLatIndex$lon]),
+                        range(lat[nAtlLonLatIndex$lat]), newlyn.start.year.pred,
+                        newlyn.end.year.pred, slp.yrs)
+
+newlyn.tot.p.pred <- total.pressure(newlyn.sl.pred$Height,newlyn.pa.pred)
+
+newlyn.corr.pred <- corr.pressure(newlyn.tot.p.pred, slpNAtlAnnArray,
+                             newlyn.start.year.pred, newlyn.end.year.pred, slp.yrs)
+
+## Full
+newlyn.sl.full <- load.tg.data(newlyn.start.year.full,newlyn.end.year.full,"newlyn")
+newlyn.pa.full <-
+  interp.local.pressure(-5.55,50.1,slpNAtlAnnArray,
+                        range(lon2[nAtlLonLatIndex$lon]),range(lat[nAtlLonLatIndex$lat]),
+                         newlyn.start.year.full, newlyn.end.year.full, slp.yrs)
+
+newlyn.tot.p.full <- total.pressure(newlyn.sl.full$Height,newlyn.pa.full)
+
+newlyn.corr.full <- corr.pressure(newlyn.tot.p.full, slpNAtlAnnArray,
+                             newlyn.start.year.full, newlyn.end.year.full, slp.yrs)
+
+newlyn.corr.dt.full <- corr.pressure.dt(newlyn.tot.p.full, slpNAtlAnnArray,
+                             newlyn.start.year.full, newlyn.end.year.full, slp.yrs)
+
+##*******************************************************************************************************
+## Sort correlated data
+
+lmRobControl <- lmRob.control(mxr=100,mxf=100,trace=F)
+
+## Partial
+newlyn.sorted.pa.partial <- sort.corr.pa(newlyn.corr.partial[,,1], slpNAtlAnnArray,
+                                         newlyn.start.year.partial, newlyn.end.year.partial, slp.yrs)
+data.newlyn.partial <- data.frame(msl=newlyn.tot.p.partial,
+                                  t=seq(from=newlyn.start.year.partial,to=newlyn.end.year.partial),
+                                  newlyn.sorted.pa.partial)
+tg.lmRob.newlyn.partial <- lmRob(msl ~ ., x=T, y=T, data=data.newlyn.partial, control=lmRobControl,
+                                 na.action=na.exclude)
+## Variance reduction
+tg.lmRob.newlyn.partial$r.sq
+#[1] 0.7014041
+
+## Prediction
+newlyn.sorted.pa.pred <- sort.corr.pa(newlyn.corr.pred[,,1],
+                                      slpNAtlAnnArray,
+                                      newlyn.start.year.pred,
+                                      newlyn.end.year.pred, slp.yrs)
+## Singluar matrix encountered with more than 13 pressures here
+data.newlyn.pred <- data.frame(msl=newlyn.tot.p.pred,
+                                  t=seq(from=newlyn.start.year.pred,to=newlyn.end.year.pred),
+                               newlyn.sorted.pa.pred[,1:13])
+tg.lmRob.newlyn.pred <- lmRob(msl ~ ., x=T, y=T, data=data.newlyn.pred, control=lmRobControl,
+                              na.action=na.exclude)
+## Variance reduction
+tg.lmRob.newlyn.pred$r.sq
+#[1] 0.5996342
+
+## Full
+newlyn.sorted.pa.full <- sort.corr.pa(newlyn.corr.full[,,1],
+                                      slpNAtlAnnArray,
+                                      newlyn.start.year.full,
+                                      newlyn.end.year.full, slp.yrs)
+## Singluar matrix encountered with more than 13 pressures here
+data.newlyn.full <- data.frame(msl=newlyn.tot.p.full,
+                                  t=seq(from=newlyn.start.year.full,to=newlyn.end.year.full),
+                               newlyn.sorted.pa.full[,1:13])
+tg.lmRob.newlyn.full <- lmRob(msl ~ ., x=T, y=T, data=data.newlyn.full, control=lmRobControl,
+                              na.action=na.exclude)
+## Variance reduction
+tg.lmRob.newlyn.full$r.sq
+#[1] 0.7450572
+
+##
+## Most correlated
+##
+newlyn.corr.pa.partial <- slpNAtlAnnArray[43,18,83:138]
+data.newlyn.corr.partial <- data.frame(msl=newlyn.tot.p.partial,
+                                  t=seq(from=newlyn.start.year.partial,to=newlyn.end.year.partial),
+                                  newlyn.corr.pa.partial)
+tg.lmRob.newlyn.corr.partial <- lmRob(msl ~ ., x=T, y=T, data=data.newlyn.corr.partial,
+                                 control=lmRobControl, na.action=na.exclude)
+## Variance reduction
+tg.lmRob.newlyn.corr.partial$r.sq
+#[1] 0.6592032
+
+## Prediction
+newlyn.corr.pa.pred <- slpNAtlAnnArray[43,18,46:73]
+data.newlyn.corr.pred <- data.frame(msl=newlyn.tot.p.pred,
+                                  t=seq(from=newlyn.start.year.pred,to=newlyn.end.year.pred),
+                               newlyn.corr.pa.pred)
+tg.lmRob.newlyn.corr.pred <- lmRob(msl ~ ., x=T, y=T, data=data.newlyn.corr.pred, control=lmRobControl,
+                              na.action=na.exclude)
+## Variance reduction
+tg.lmRob.newlyn.corr.pred$r.sq
+#[1] 0.7157227
+
+##*******************************************************************************************************
+##*******************************************************************************************************
+## Brest22
+brest22.start.year.partial <- 1953
+brest22.end.year.partial <- 2008
+brest22.start.year.pred <- 1916
+brest22.end.year.pred <- 1943
+brest22.start.year.full <- 1916
+brest22.end.year.full <- 2008
+brest22.start.year.early <- 1807
+brest22.end.year.early <- 2008
+
+brest22.sl.partial <- load.tg.data(brest22.start.year.partial,brest22.end.year.partial,"brest22")
+brest22.pa.partial <-
+  interp.local.pressure(-4.5,48.38,slpNAtlAnnArray,range(lon2[nAtlLonLatIndex$lon]),
+                        range(lat[nAtlLonLatIndex$lat]),
+                         brest22.start.year.partial, brest22.end.year.partial, slp.yrs)
+
+brest22.tot.p.partial <- total.pressure(brest22.sl.partial$Height,brest22.pa.partial)
+
+brest22.corr.partial <- corr.pressure(brest22.tot.p.partial, slpNAtlAnnArray,
+                             brest22.start.year.partial, brest22.end.year.partial, slp.yrs)
+
+brest22.corr.dt.partial <- corr.pressure.dt(brest22.tot.p.partial, slpNAtlAnnArray,
+                             brest22.start.year.partial, brest22.end.year.partial, slp.yrs)
+
+## Prediction
+brest22.sl.pred <- load.tg.data(brest22.start.year.pred,brest22.end.year.pred,"brest22")
+brest22.pa.pred <-
+  interp.local.pressure(-4.5,48.38,slpNAtlAnnArray,range(lon2[nAtlLonLatIndex$lon]),
+                        range(lat[nAtlLonLatIndex$lat]), brest22.start.year.pred,
+                        brest22.end.year.pred, slp.yrs)
+
+brest22.tot.p.pred <- total.pressure(brest22.sl.pred$Height,brest22.pa.pred)
+
+brest22.corr.pred <- corr.pressure(brest22.tot.p.pred, slpNAtlAnnArray,
+                             brest22.start.year.pred, brest22.end.year.pred, slp.yrs)
+
+## Full
+brest22.sl.full <- load.tg.data(brest22.start.year.full,brest22.end.year.full,"brest22")
+brest22.pa.full <-
+  interp.local.pressure(-4.5,48.38,slpNAtlAnnArray,
+                        range(lon2[nAtlLonLatIndex$lon]),range(lat[nAtlLonLatIndex$lat]),
+                         brest22.start.year.full, brest22.end.year.full, slp.yrs)
+
+brest22.tot.p.full <- total.pressure(brest22.sl.full$Height,brest22.pa.full)
+
+brest22.corr.full <- corr.pressure(brest22.tot.p.full, slpNAtlAnnArray,
+                             brest22.start.year.full, brest22.end.year.full, slp.yrs)
+
+brest22.corr.dt.full <- corr.pressure.dt(brest22.tot.p.full, slpNAtlAnnArray,
+                             brest22.start.year.full, brest22.end.year.full, slp.yrs)
+## Early
+brest22.sl.early <- load.tg.data(brest22.start.year.early,brest22.end.year.early,"brest22")
+
+## Start of SLP records: 1871
+brest22.sl.1871 <- load.tg.data(1871,brest22.end.year.pred,"brest22")
+brest22.pa.1871 <-
+  interp.local.pressure(-4.5,48.38,slpNAtlAnnArray,
+                        range(lon2[nAtlLonLatIndex$lon]),range(lat[nAtlLonLatIndex$lat]),
+                         1871, brest22.end.year.pred, slp.yrs)
+
+brest22.tot.p.1871 <- total.pressure(brest22.sl.1871$Height,brest22.pa.1871)
+brest22.corr.dt.1871 <- corr.pressure.dt(brest22.tot.p.1871, slpNAtlAnnArray,
+                             1871, brest22.end.year.pred, slp.yrs)
+
+##*******************************************************************************************************
+## Sort correlated data
+
+lmRobControl <- lmRob.control(mxr=100,mxf=100,trace=F)
+
+## Partial
+brest22.sorted.pa.partial <- sort.corr.pa(brest22.corr.partial[,,1], slpNAtlAnnArray,
+                                         brest22.start.year.partial, brest22.end.year.partial, slp.yrs)
+data.brest22.partial <- data.frame(msl=brest22.tot.p.partial,
+                                  t=seq(from=brest22.start.year.partial,to=brest22.end.year.partial),
+                                  brest22.sorted.pa.partial)
+tg.lmRob.brest22.partial <- lmRob(msl ~ ., x=T, y=T, data=data.brest22.partial, control=lmRobControl,
+                                 na.action=na.exclude)
+## Variance reduction
+tg.lmRob.brest22.partial$r.sq
+#[1] 0.7916582 cf 0.7014041
+
+## Prediction
+
+brest22.sorted.pa.pred <- sort.corr.pa(brest22.corr.pred[,,1],
+                                      slpNAtlAnnArray,
+                                      brest22.start.year.pred,
+                                      brest22.end.year.pred, slp.yrs)
+## Singluar matrix encountered with more than 13 pressures here
+data.brest22.pred <- data.frame(msl=brest22.tot.p.pred,
+                                  t=seq(from=brest22.start.year.pred,to=brest22.end.year.pred),
+                               brest22.sorted.pa.pred[,1:13])
+tg.lmRob.brest22.pred <- lmRob(msl ~ ., x=T, y=T, data=data.brest22.pred, control=lmRobControl,
+                              na.action=na.exclude)
+## Variance reduction
+tg.lmRob.brest22.pred$r.sq
+#[1] 0.533065 cf 0.5996342
+
+## Full
+brest22.sorted.pa.full <- sort.corr.pa(brest22.corr.full[,,1],
+                                      slpNAtlAnnArray,
+                                      brest22.start.year.full,
+                                      brest22.end.year.full, slp.yrs)
+## Singluar matrix encountered with more than 13 pressures here
+data.brest22.full <- data.frame(msl=brest22.tot.p.full,
+                                  t=seq(from=brest22.start.year.full,to=brest22.end.year.full),
+                               brest22.sorted.pa.full[,1:13])
+tg.lmRob.brest22.full <- lmRob(msl ~ ., x=T, y=T, data=data.brest22.full, control=lmRobControl,
+                              na.action=na.exclude)
+## Variance reduction
+tg.lmRob.brest22.full$r.sq
+#[1] 0.7511727
+
+##
+## Most correlated
+##
+brest22.corr.pa.partial <- slpNAtlAnnArray[43,17,83:138]
+data.brest22.corr.partial <- data.frame(msl=brest22.tot.p.partial,
+                                  t=seq(from=brest22.start.year.partial,to=brest22.end.year.partial),
+                                  brest22.corr.pa.partial)
+tg.lmRob.brest22.corr.partial <- lmRob(msl ~ ., x=T, y=T, data=data.brest22.corr.partial,
+                                 control=lmRobControl, na.action=na.exclude)
+## Variance reduction
+tg.lmRob.brest22.corr.partial$r.sq
+#[1] 0.6844436
+
+## Prediction
+brest22.corr.pa.pred <- slpNAtlAnnArray[43,17,46:73]
+data.brest22.corr.pred <- data.frame(msl=brest22.tot.p.pred,
+                                  t=seq(from=brest22.start.year.pred,to=brest22.end.year.pred),
+                               brest22.corr.pa.pred)
+tg.lmRob.brest22.corr.pred <- lmRob(msl ~ ., x=T, y=T, data=data.brest22.corr.pred, control=lmRobControl,
+                              na.action=na.exclude)
+## Variance reduction
+tg.lmRob.brest22.corr.pred$r.sq
+#[1] 0.4453015
+
+## Prediction to 1871
+brest22.corr.pa.1871 <- slpNAtlAnnArray[41,17,1:73]
+data.brest22.corr.1871 <- data.frame(msl=brest22.tot.p.1871,
+                                  t=seq(from=1871,to=brest22.end.year.pred),
+                               brest22.corr.pa.1871)
+tg.lmRob.brest22.corr.1871 <- lmRob(msl ~ ., x=T, y=T, data=data.brest22.corr.1871, control=lmRobControl,
+                              na.action=na.exclude)
+## Variance reduction
+tg.lmRob.brest22.corr.1871$r.sq
+#[1] 0.5350695
+
+## Comparison with Kuettel pressure data in the centre of the sub-polar gyre at 35N 40W
+centre.gyre.full <- interp.local.pressure(-40,35,slpNAtlAnnArray,
+                        range(lon2[nAtlLonLatIndex$lon]),range(lat[nAtlLonLatIndex$lat]),
+                         brest22.start.year.full, brest22.end.year.full, slp.yrs)
+centre.gyre.early <- interp.local.pressure(-40,35,slpNAtlAnnArray,
+                        range(lon2[nAtlLonLatIndex$lon]),range(lat[nAtlLonLatIndex$lat]),
+                         1871, brest22.end.year.full, slp.yrs)
+kuettel.centre.gyre <-
+  read.table('/home/simonh/Dropbox/brestNewlynData/pressure/kuettel/tempbox134_added',
+             sep="", col.names=c("yr","p"))
+
+which(kuettel.centre.gyre$yr==brest22.start.year.early)
+#[1] 58
+which(kuettel.centre.gyre$yr==brest22.start.year.full)
+#[1] 167
+which(kuettel.centre.gyre$yr==brest22.end.year.full)
+#[1] 259
+cor.test(centre.gyre.full,kuettel.centre.gyre$p[167:259])
+cor.test(brest22.tot.p.full,kuettel.centre.gyre$p[167:259])
+cor.test(detrend(brest22.sl.full$Height),kuettel.centre.gyre$p[167:259])
+cor.test(detrend(newlyn.sl.full$Height)/max(abs(detrend(newlyn.sl.full$Height))),
+         (kuettel.centre.gyre$p[167:259]-mean(kuettel.centre.gyre$p[167:259], na.rm=T))/
+         max(abs(kuettel.centre.gyre$p[167:259]-mean(kuettel.centre.gyre$p[167:259], na.rm=T)))*-1)
+cor.test(detrend(brest22.sl.early$Height)/max(abs(detrend(brest22.sl.early$Height))),
+         (kuettel.centre.gyre$p[58:259]-mean(kuettel.centre.gyre$p[58:259], na.rm=T))/
+         max(abs(kuettel.centre.gyre$p[58:259]-mean(kuettel.centre.gyre$p[58:259], na.rm=T)))*-1)
+##*****************************************************************************
+##*****************************************************************************
+## Plots
+##
+
+# Conversion factor Pa -> sea level equivalent (mm)
+cf <- 1025*9.81/1000
+
+# Fig 1
+x11()
+make.image3(lon2[nAtlLonLatIndex$lon],flip.matrix(lat[nAtlLonLatIndex$lat]),newlyn.corr.partial[,,1])
+
+# Fig 2
+x11()
+multi.plot.4(lon2[nAtlLonLatIndex$lon],flip.matrix(lat[nAtlLonLatIndex$lat]),
+             newlyn.corr.partial[,,1],newlyn.lag1.corr.partial[,,1],
+             newlyn.lag2.corr.partial[,,1],newlyn.lag10.corr.partial[,,1],
+             c("Zero lag", "Lag 1", "Lag 2", "Lag 10"))
+
+# Fig 3
+x11()
+make.image3(lon2[nAtlLonLatIndex$lon],flip.matrix(lat[nAtlLonLatIndex$lat]),brest22.corr.partial[,,1])
+
+# Fig 4
+x11()
+m.newlyn.tot.p.partial <- mean(newlyn.tot.p.partial, na.rm=T)
+plot(newlyn.start.year.partial:newlyn.end.year.partial,
+     newlyn.tot.p.partial-m.newlyn.tot.p.partial,col='blue',type='l',
+     ylim=c(-2000,1200), xlim=c(newlyn.start.year.pred, newlyn.end.year.partial), ann=F)
+
+lines(tg.lmRob.newlyn.partial$x[,2], tg.lmRob.newlyn.partial$fitted-m.newlyn.tot.p.partial,
+      col='cyan')
+lines(newlyn.start.year.pred:newlyn.end.year.pred,
+      newlyn.tot.p.pred-m.newlyn.tot.p.partial,col='blue')
+lines(tg.lmRob.newlyn.pred$x[,2], tg.lmRob.newlyn.pred$fitted-m.newlyn.tot.p.partial, col='orange')
+
+# Fig 5
+x11()
+make.image3(lon2[nAtlLonLatIndex$lon],flip.matrix(lat[nAtlLonLatIndex$lat]),newlyn.corr.full[,,1])
+
+# Fig 6
+x11()
+m.brest22.tot.p.partial <- mean(brest22.tot.p.partial, na.rm=T)
+plot(brest22.start.year.partial:brest22.end.year.partial,
+     brest22.tot.p.partial-m.brest22.tot.p.partial,col='blue',type='l',
+     ylim=c(-2000,1200), xlim=c(brest22.start.year.pred, brest22.end.year.partial), ann=F)
+
+lines(tg.lmRob.brest22.partial$x[,2], tg.lmRob.brest22.partial$fitted-m.brest22.tot.p.partial,
+      col='cyan')
+lines(brest22.start.year.pred:brest22.end.year.pred,
+      brest22.tot.p.pred-m.brest22.tot.p.partial,col='blue')
+lines(tg.lmRob.brest22.pred$x[,2], tg.lmRob.brest22.pred$fitted-m.brest22.tot.p.partial, col='orange')
+lines(tg.lmRob.brest22.full$x[,2],tg.lmRob.brest22.full$fitted-m.brest22.tot.p.partial,col='red')
+
+# Fig 7
+x11()
+make.image5(lon2[nAtlLonLatIndex$lon],flip.matrix(lat[nAtlLonLatIndex$lat]),newlyn.corr.dt.partial[,,1])
+# Fig 8
+x11()
+make.image5(lon2[nAtlLonLatIndex$lon],flip.matrix(lat[nAtlLonLatIndex$lat]),newlyn.corr.dt.full[,,1])
+# Fig 9
+x11()
+plot((brest22.start.year.early:brest22.end.year.early),
+     detrend(brest22.sl.early$Height)/max(abs(detrend(brest22.sl.early$Height))),
+     type='l', col='red', ann=F, ylim=c(-1,1))
+lines((brest22.start.year.early:brest22.end.year.early),
+      (kuettel.centre.gyre$p[58:259]-
+       mean(kuettel.centre.gyre$p[58:259], na.rm=T))/max(abs(kuettel.centre.gyre$p[58:259]-
+                                              mean(kuettel.centre.gyre$p[58:259], na.rm=T)))*-1,
+      col='blue')
+lines((1871:brest22.end.year.early),
+      (centre.gyre.early-mean(centre.gyre.early, na.rm=T))/
+      max(abs(centre.gyre.early-mean(centre.gyre.early, na.rm=T)))*-1, col='magenta')
+
+# Fig 10
+x11()
+#png("newlyn.corr.dt.partial.png")
+plot(newlyn.start.year.partial:newlyn.end.year.partial,
+     newlyn.tot.p.partial/cf - 1e4,col='blue',type='l',
+     ylim=c(1.005e5/cf - 1e4, 1.035e5/cf - 1e4),
+     xlim=c(newlyn.start.year.pred, newlyn.end.year.partial),
+     ylab='Sea Level Equivalent [mm]', xlab='Year', lwd=2)
+
+lines(tg.lmRob.newlyn.corr.partial$x[,2],
+      tg.lmRob.newlyn.corr.partial$fitted/cf - 1e4,
+      col='red', lwd=2)
+lines(newlyn.start.year.pred:newlyn.end.year.pred,
+      newlyn.tot.p.pred/cf - 1e4, col='blue', lwd=2)
+lines(tg.lmRob.newlyn.corr.pred$x[,2],
+      tg.lmRob.newlyn.corr.pred$fitted/cf - 1e4, col='orange', lwd=2)
+grid(lwd=2)
+#lines(tg.lmRob.brest22.full$x[,2],tg.lmRob.brest22.full$fitted,col='red')
+#dev.off()
+
+# Fig 11
+x11()
+make.image5(lon2[nAtlLonLatIndex$lon],flip.matrix(lat[nAtlLonLatIndex$lat]),brest22.corr.dt.partial[,,1])
+# Fig 12
+x11()
+make.image5(lon2[nAtlLonLatIndex$lon],flip.matrix(lat[nAtlLonLatIndex$lat]),brest22.corr.dt.full[,,1])
+# Fig 13
+x11()
+make.image5(lon2[nAtlLonLatIndex$lon],flip.matrix(lat[nAtlLonLatIndex$lat]),brest22.corr.dt.1871[,,1])
+
+# Fig 14
+x11()
+#png("brest22.corr.dt.partial.png")
+plot(brest22.start.year.partial:brest22.end.year.partial,
+     brest22.tot.p.partial-m.brest22.tot.p.partial,col='blue',type='l',
+     ylim=c(-2000,1200), xlim=c(brest22.start.year.pred, brest22.end.year.partial), ann=F)
+
+lines(tg.lmRob.brest22.corr.partial$x[,2],
+      tg.lmRob.brest22.corr.partial$fitted-m.brest22.tot.p.partial, col='cyan')
+lines(brest22.start.year.pred:brest22.end.year.pred,
+      brest22.tot.p.pred-m.brest22.tot.p.partial,col='blue')
+lines(tg.lmRob.brest22.corr.pred$x[,2],
+      tg.lmRob.brest22.corr.pred$fitted-m.brest22.tot.p.partial, col='orange')
+#dev.off()
+
+# Fig 15
+x11()
+#png("brest22.corr.dt.1871.png")
+plot(brest22.start.year.partial:brest22.end.year.partial,
+     brest22.tot.p.partial-m.brest22.tot.p.partial,col='blue',type='l',
+     ylim=c(-2000,1200), xlim=c(1871, brest22.end.year.partial), ann=F)
+
+lines(tg.lmRob.brest22.corr.partial$x[,2],
+      tg.lmRob.brest22.corr.partial$fitted-m.brest22.tot.p.partial, col='cyan')
+lines(1871:brest22.end.year.pred,
+      brest22.tot.p.1871-m.brest22.tot.p.partial,col='blue')
+lines(tg.lmRob.brest22.corr.1871$x[,2],
+      tg.lmRob.brest22.corr.1871$fitted-m.brest22.tot.p.partial, col='orange')
+#dev.off()
+
+x11()
+#png("newlyn.corr.dt.partial.azores.new.png")
+make.image5(lon2[nAtlLonLatIndex$lon],flip.matrix(lat[nAtlLonLatIndex$lat]),newlyn.corr.dt.partial[,,1])
+###############################################################################
+## Variance reduction
+###############################################################################
+
+## Grid
+(var(newlyn.tot.p.partial,na.rm=T)-var(tg.lmRob.newlyn.partial$resid))/
+  var(newlyn.tot.p.partial,na.rm=T)*100
+#[1] 72.45462
+(var(newlyn.tot.p.pred)-var(tg.lmRob.newlyn.pred$resid))/var(newlyn.tot.p.pred)*100
+#[1] -99.04988
+
+(var(brest22.tot.p.partial)-var(tg.lmRob.brest22.partial$resid))/var(brest22.tot.p.partial)*100
+#[1] 32.49203
+(var(brest22.tot.p.pred)-var(tg.lmRob.brest22.pred$resid))/var(brest22.tot.p.pred)*100
+#[1] 36.78992
+(var(brest22.tot.p.1871)-var(tg.lmRob.brest22.1871$resid))/var(brest22.tot.p.1871)*100
+#[1] -42.25224
+
+## Most correlated
+(var(newlyn.tot.p.partial,na.rm=T)-var(tg.lmRob.newlyn.corr.partial$resid))/
+  var(newlyn.tot.p.partial,na.rm=T)*100
+#[1] 78.20956
+(var(newlyn.tot.p.pred)-var(tg.lmRob.newlyn.corr.pred$resid))/var(newlyn.tot.p.pred)*100
+#[1] 79.97035
+
+(var(brest22.tot.p.partial)-var(tg.lmRob.brest22.corr.partial$resid))/var(brest22.tot.p.partial)*100
+#[1] 76.08023
+(var(brest22.tot.p.pred)-var(tg.lmRob.brest22.corr.pred$resid))/var(brest22.tot.p.pred)*100
+#[1] 36.78992
+(var(brest22.tot.p.1871)-var(tg.lmRob.brest22.corr.1871$resid))/var(brest22.tot.p.1871)*100
+#[1] 58.76916
+
+## Percentage of variance that the regression accounts for at Newlyn post 1953
+(var(detrend(newlyn.tot.p.partial)) - var(newlyn.tot.p.partial[1:54] - tg.lmRob.newlyn.corr.partial$fitted[1:54]))/var(detrend(newlyn.tot.p.partial)) * 100
+#[1] 52.60476
+
+## Percentage of variance that the prediction accounts for at Newlyn pre 1943
+(var(detrend(newlyn.tot.p.pred)) - var(newlyn.tot.p.pred - tg.lmRob.newlyn.corr.pred$fitted))/var(detrend(newlyn.tot.p.pred)) * 100
+#[1] 68.92396
+
+## Percentage of variance that the prediction accounts for at Newlyn 1916-2008
+newlyn.junk.tot.p <- NA*c(1:93)
+tg.junk.newlyn.corr.fitted <- newlyn.junk.tot.p
+newlyn.junk.tot.p[1:28] <- newlyn.tot.p.pred
+newlyn.junk.tot.p[38:93] <- newlyn.tot.p.partial
+tg.junk.newlyn.corr.fitted[1:28] <- tg.lmRob.newlyn.corr.pred$fitted
+tg.junk.newlyn.corr.fitted[38:92] <- tg.lmRob.newlyn.corr.partial$fitted
+
+(var(detrend(newlyn.junk.tot.p), na.rm=T) - var(newlyn.junk.tot.p - tg.junk.newlyn.corr.fitted, na.rm=T))/var(detrend(newlyn.junk.tot.p), na.rm=T) * 100
+#[1] 52.84271
+
+
+## Percentage of variance that the regression accounts for at Brest post 1953
+(var(detrend(brest22.tot.p.partial)) - var(brest22.tot.p.partial - tg.lmRob.brest22.corr.partial$fitted))/var(detrend(brest22.tot.p.partial)) * 100
+#[1] 53.67614
+
+## Percentage of variance that the prediction accounts for at Brest pre 1943
+(var(detrend(brest22.tot.p.pred)) - var(brest22.tot.p.pred - tg.lmRob.brest22.corr.pred$fitted))/var(detrend(brest22.tot.p.pred)) * 100
+#[1] 21.22722

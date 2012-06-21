@@ -1,0 +1,104 @@
+###############################################################################
+# Reads monhly mean sea levels caluclated from POLCOMS output at points
+# representing Spanish sea level stations
+#
+# Simon Holgate, August 2005
+#
+###############################################################################
+
+#######################
+# _*S2 dimensions:    #
+#                     #
+# *_Xmin:   -19.83333 #
+# Xres:   1/6         #
+# Xn:     198         #
+#                     #
+# Ymin:   40.11111    #
+# Yres:   1/9         #
+# Yn:     224         #
+#######################
+
+# Get station points
+load("~/diskx/polcoms/spain/spanishStnsLatLon.RData")
+
+# Also choose 6 boundary points to reflect the deep ocean boundary condition
+# Choose points at:
+# x=1, y=50, x=1, y=100, x=1, y=150
+# x=50, y=50, x=50, y=100, x=50, y=150,
+
+load("~/diskx/polcoms/iseajseanpsea.Rdata")
+
+library(fields)
+# Use jet colors for images
+source('~/bin/RScripts/jet.colors.R')
+lat<-seq(from=40.11111,by=1/9,length=224)
+lon<-seq(from=-19.83333,by=1/6,length=198)
+
+l<-198
+m<-224
+lm<-l*m
+n<-45
+#
+yearsArray<-array(data=
+  c(1960,1961,1962,1963,1964,1965,1966,1967,1968,1969,
+    1970,1971,1972,1973,1974,1975,1976,1977,1978,1979,
+    1980,1981,1982,1983,1984,1985,1986,1987,1988,1989,
+    1990,1991,1992,1993,1994,1995,1996,1997,1998,1999,
+    2000,2001,2002,2003,2004),
+  dim=c(n,1))
+
+# Only interest ourselves with the 12 stations in the Atlantic
+spanishMonthlyMean<-array(NA,dim=c(12*n,12))
+deepSeaMonthlyMean<-array(NA,dim=c(12*n,6))
+
+deepSeaPoints <- c(1,1,1,50,50,50,50,100,150,50,100,150)
+dim(deepSeaPoints) <-c(6,2) 
+
+zettMonthlyMean<-array(NA,dim=c(l,m))
+monthCount<-1
+
+for (i in 1:n){
+  inMonthlyMean <- file(
+    paste("~/diskx/polcoms/S12run408/S12run408ZetFiles/zett.mm.",yearsArray[i],".dat",sep=""), "rb")
+
+# Read monthly means in
+  for (j in 1:12){
+    zett<-readBin(inMonthlyMean,n=npsea, what='numeric', size=4)
+    for (ip in 1:npsea) {
+      zettMonthlyMean[isea[ip],jsea[ip]]<-zett[ip]
+    }
+    
+    for (k in 1:12){
+      spanishMonthlyMean[monthCount,k]<-zettMonthlyMean[spanishStnsXY[k,1],spanishStnsXY[k,2]]    
+    }
+    
+    for (k in 1:6){
+      deepSeaMonthlyMean[monthCount,k] <-
+        zettMonthlyMean[deepSeaPoints[k,1], deepSeaPoints[k,2]]
+    }
+    
+    monthCount<-monthCount+1
+  }
+    
+  close(inMonthlyMean)
+}
+#
+monthsArray <- seq.Date(from=as.Date("1960/1/15"), to=as.Date("1999/12/15"), by="1 month")
+#
+zettMonthlyMean[which(zettMonthlyMean==0)]<-NA
+
+x11()
+par(family="HersheySans")
+image.plot(lon,lat,zettMonthlyMean[c(1:198),c(1:224)],zlim=c(-1,1),
+  col=jet.colors(100))
+
+x11()
+par(family="HersheySans")
+junk <- zettMonthlyMean[c(1:198),c(1:224)]
+for (i in 1:12) {
+ junk[spanishStnsXY[i,1],spanishStnsXY[i,2]] <- -99.0
+}
+image.plot(lon[1:125],lat[1:50],junk[1:125,1:50],zlim=c(-99,1), col=jet.colors(100))
+
+#
+save(file="spanishModelMonthlyMean.RData", deepSeaMonthlyMean, spanishMonthlyMean, monthsArray)
